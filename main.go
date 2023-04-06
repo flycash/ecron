@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
+	"github.com/ecodeclub/ecron/internal/storage/rdb"
 	"time"
 
-	"github.com/gotomicro/ecron/internal/scheduler"
-	"github.com/gotomicro/ecron/internal/storage/mysql"
+	"github.com/ecodeclub/ecron/internal/scheduler"
 )
 
 func main() {
 	ctx := context.TODO()
-	storeIns, err := mysql.NewMysqlStorage("root:@tcp(localhost:3306)/ecron",
-		mysql.WithPreemptInterval(1*time.Second))
+	storeIns, err := rdb.NewMysqlStorage("root:@tcp(localhost:3306)/ecron",
+		rdb.WithPreemptInterval(1*time.Second))
 	if err != nil {
 		return
 	}

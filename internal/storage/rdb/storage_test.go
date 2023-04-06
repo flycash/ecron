@@ -1,13 +1,27 @@
-package mysql
+// Copyright 2023 ecodeclub
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package rdb
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/gotomicro/ecron/internal/storage"
-	"github.com/gotomicro/ecron/internal/task"
-	"github.com/gotomicro/eorm"
+	"github.com/ecodeclub/ecron/internal/storage"
+	"github.com/ecodeclub/ecron/internal/task"
+	"github.com/ecodeclub/eorm"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -85,7 +99,7 @@ func TestStorage_SinglePreempt(t *testing.T) {
 		{
 			name: "抢占处于创建的状态的任务",
 			before: func() {
-				st, _ = newMysqlStorage(db)
+				st, _ = NewStorage(db)
 				for i := 0; i < 2; i++ {
 					_ = eorm.NewInserter[TaskInfo](db).Values(&TaskInfo{
 						Name:            "test task",
@@ -106,7 +120,7 @@ func TestStorage_SinglePreempt(t *testing.T) {
 		{
 			name: "抢占由于负载问题被放弃的任务",
 			before: func() {
-				st, _ = newMysqlStorage(db)
+				st, _ = NewStorage(db)
 				for i := 0; i < 2; i++ {
 					_ = eorm.NewInserter[TaskInfo](db).Values(&TaskInfo{
 						Name:            "test task",
@@ -128,7 +142,7 @@ func TestStorage_SinglePreempt(t *testing.T) {
 			name: "抢占处于抢占状态但是在续约周期内没有续约的任务",
 			before: func() {
 				retry := &storage.RefreshIntervalRetry{Interval: time.Second, Max: 3}
-				st, _ = newMysqlStorage(db, WithRefreshRetry(retry))
+				st, _ = NewStorage(db, WithRefreshRetry(retry))
 				for i := 0; i < 2; i++ {
 					_ = eorm.NewInserter[TaskInfo](db).Values(&TaskInfo{
 						Name:            "test task",
@@ -182,7 +196,7 @@ func TestStorage_Refresh(t *testing.T) {
 	assert.Nil(t, err)
 
 	var taskId int64
-	s, _ := newMysqlStorage(db, WithRefreshInterval(5*time.Second))
+	s, _ := NewStorage(db, WithRefreshInterval(5*time.Second))
 	testCases := []struct {
 		name       string
 		before     func()
@@ -262,9 +276,9 @@ func TestStorage_Refresh(t *testing.T) {
 func TestStorage_Lookup(t *testing.T) {
 	db, err := eorm.Open("mysql", "root:@tcp(localhost:3306)/ecron")
 	assert.Nil(t, err)
-	s1, _ := newMysqlStorage(db) // task占有者storage
-	s2, _ := newMysqlStorage(db)
-	s, _ := newMysqlStorage(db) // 当前storage
+	s1, _ := NewStorage(db) // task占有者storage
+	s2, _ := NewStorage(db)
+	s, _ := NewStorage(db) // 当前storage
 
 	taskId, _ := eorm.NewInserter[TaskInfo](db).Values(&TaskInfo{
 		SchedulerStatus: storage.EventTypePreempted,
