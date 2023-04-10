@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -13,18 +14,19 @@ import (
 	"github.com/gotomicro/ekit/queue"
 )
 
-func NewScheduler(s storage.Storage) *Scheduler {
+func NewScheduler(s storage.Storager) *Scheduler {
 	sc := &Scheduler{
-		s:          s,
-		tasks:      make(map[string]scheduledTask),
-		executors:  make(map[string]executor.Executor),
-		mux:        sync.Mutex{},
-		readyTasks: queue.NewDelayQueue[execution](10),
-		taskEvents: make(chan task.Event),
+		s:             s,
+		tasks:         make(map[string]scheduledTask),
+		executors:     make(map[string]executor.Executor),
+		mux:           sync.Mutex{},
+		readyTasks:    queue.NewDelayQueue[execution](10),
+		taskEvents:    make(chan task.Event),
+		executeEvents: make(chan executeEvent),
 	}
 
 	sc.executors = map[string]executor.Executor{
-		task.TypeHTTP: executor.NewHttpExec(),
+		task.TypeHTTP: executor.NewHttpExec(http.DefaultClient),
 	}
 
 	return sc
@@ -32,13 +34,17 @@ func NewScheduler(s storage.Storage) *Scheduler {
 
 func (sc *Scheduler) Start(ctx context.Context) error {
 	go func() {
-		// 这里进行已经写入延迟队列中的事件执行，并且写入时间执行的结果
-		e := sc.executeLoop(ctx)
-		if e != nil {
+		// 这里进行已经写入延迟队列中的事件执行
+		if e := sc.executeLoop(ctx); e != nil {
 			log.Println(e)
 		}
 	}()
-
+	go func() {
+		// 这里监听执行的结果
+		if e := sc.executeEventLoop(ctx); e != nil {
+			log.Println(e)
+		}
+	}()
 	events, err := sc.s.Events(ctx, sc.taskEvents)
 	if err != nil {
 		return err
@@ -74,6 +80,7 @@ func (sc *Scheduler) Start(ctx context.Context) error {
 	}
 }
 
+// 负责从队列中获取当前可以执行的任务
 func (sc *Scheduler) executeLoop(ctx context.Context) error {
 	for {
 		t, err := sc.readyTasks.Dequeue(ctx)
@@ -81,34 +88,88 @@ func (sc *Scheduler) executeLoop(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		go t.run()
-		for {
-			select {
-			case te := <-t.taskEvents:
-				switch te.Type {
-				case task.EventTypeRunning:
-					if er := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, t.task.TaskId,
-						task.EventTypeInit, task.EventTypeRunning); err != nil {
-						log.Println("sche running: ", er)
-					}
-					log.Println("scheduler 收到task running信号")
-				case task.EventTypeSuccess:
-					if er := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, t.task.TaskId,
-						task.EventTypeRunning, task.EventTypeSuccess); err != nil {
-						log.Println("sche succ: ", er)
-					}
-					log.Println("scheduler 收到task run success信号:", t.task.TaskId)
-				case task.EventTypeFailed:
-					if er := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, t.task.TaskId,
-						task.EventTypeRunning, task.EventTypeFailed); err != nil {
-						log.Println("sche fail: ", er)
-					}
-					log.Println("scheduler 收到task run fail信号")
-				}
-				sc.taskEvents <- te
+		go t.run(sc.executeEvents)
+	}
+}
+
+// 负责统一监听任务执行的后续
+// 目前实现的为轮询模式
+// 同时负责新任务的执行和旧任务的轮训查询
+// 后续父子任务的思路 想基于scheduledTask的用链表串联后续任务
+func (sc *Scheduler) executeEventLoop(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("scheduler 收到ctx cancel信号 退出执行返回事件的监听")
+		case te := <-sc.executeEvents:
+			needEnqueue := false
+			event := task.Event{
+				Task: *te.task.task,
 			}
+			now := time.Now()
+			next := now.Add(time.Second)
+			switch te.event.Type {
+			case executor.ExecuteWaiting:
+				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
+					task.EventTypePreempted, task.EventTypeRunnable); err != nil {
+					log.Println(err)
+				}
+				event.Type = task.EventTypeRunnable
+				if te.event.Delay > time.Second {
+					next = now.Add(te.event.Delay)
+				}
+				log.Println("scheduler 收到task runnable信号")
+			case executor.ExecuteReady:
+				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
+					task.EventTypeRunnable, task.EventTypeInit); err != nil {
+					log.Println(err)
+				}
+				event.Type = task.EventTypeInit
+				if te.event.Delay > time.Second {
+					next = now.Add(te.event.Delay)
+				}
+				log.Println("scheduler 收到task init信号")
+			case executor.ExecuteRunning:
+				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
+					task.EventTypeInit, task.EventTypeRunning); err != nil {
+					log.Println(err)
+				}
+				event.Type = task.EventTypeRunning
+				if te.event.Delay > time.Second {
+					next = now.Add(te.event.Delay)
+				}
+				log.Println("scheduler 收到task running信号")
+			case executor.ExecuteSuccess:
+				//反馈进度至Storage
+				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
+					task.EventTypeRunning, task.EventTypeSuccess); err != nil {
+					log.Println(err)
+				}
+				needEnqueue = true
+				event.Type = task.EventTypeSuccess
+				next = te.task.next()
+				log.Println("scheduler 收到task run success信号")
+			case executor.ExecuteFailed:
+				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
+					task.EventTypeRunning, task.EventTypeFailed); err != nil {
+					log.Println(err)
+				}
+				needEnqueue = true
+				event.Type = task.EventTypeFailed
+				next = te.task.next()
+				log.Println("scheduler 收到task run fail信号")
+			}
+			if needEnqueue {
+				//安排下一次执行
+				_ = sc.readyTasks.Enqueue(ctx, execution{
+					scheduledTask: &te.task,
+					time:          next,
+				})
+			}
+			sc.taskEvents <- event
 		}
 	}
+
 }
 
 func (sc *Scheduler) newRunningTask(ctx context.Context, t *task.Task, exe executor.Executor) scheduledTask {
@@ -123,11 +184,11 @@ func (sc *Scheduler) newRunningTask(ctx context.Context, t *task.Task, exe execu
 		return st
 	}
 	st = scheduledTask{
-		task:       t,
-		executor:   exe,
-		executeId:  exeId,
-		expr:       cronexpr.MustParse(t.Cron),
-		taskEvents: make(chan task.Event),
+		ctx:       ctx,
+		task:      t,
+		executor:  exe,
+		executeId: exeId,
+		expr:      cronexpr.MustParse(t.Cron),
 	}
 	return st
 }
@@ -140,23 +201,22 @@ func (r *scheduledTask) stop() {
 	r.stopped = true
 }
 
-func (r *scheduledTask) run() {
+func (r *scheduledTask) run(ec chan<- executeEvent) {
 	// 如果这个任务已经被停止/取消了，什么也不做
 	if r.stopped {
 		return
 	}
+	// 如果进行后续监控的任务是由专门的goroutine负责
+	// 且此处只是等待executor的返回、没有其他任务，并且是快速调用快速返回
+	// 则应该不需要利用chan通信
+	event := r.executor.Execute(r.ctx, r.task)
 	select {
-	case r.taskEvents <- task.Event{Task: *r.task, Type: task.EventTypeRunning}:
-		log.Printf("task id: %d, is running", r.task.TaskId)
-	}
-	// 这里executor返回一个task.Event,表示任务的执行状态
-	taskEvent := r.executor.Execute(r.task)
-	select {
-	case e := <-taskEvent:
-		r.taskEvents <- e
-		switch e.Type {
-		case task.EventTypeFailed, task.EventTypeSuccess:
-			return
-		}
+	case ec <- executeEvent{
+		task:  *r,
+		event: event,
+	}:
+		log.Printf(`task(%v) 已执行`, r.task.TaskId)
+	case <-r.ctx.Done(): // 利用ctx避免泄露 控制结束
+		log.Printf(`task(%v) 收到ctx结束信号`, r.task.TaskId)
 	}
 }

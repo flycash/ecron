@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -12,21 +13,27 @@ import (
 )
 
 type Scheduler struct {
-	s          storage.Storage
-	tasks      map[string]scheduledTask
-	executors  map[string]executor.Executor
-	mux        sync.Mutex
-	readyTasks *queue.DelayQueue[execution]
-	taskEvents chan task.Event
+	s             storage.Storager
+	tasks         map[string]scheduledTask
+	executors     map[string]executor.Executor
+	mux           sync.Mutex
+	readyTasks    *queue.DelayQueue[execution]
+	taskEvents    chan task.Event
+	executeEvents chan executeEvent
 }
 
 type scheduledTask struct {
-	task       *task.Task
-	executeId  int64
-	executor   executor.Executor
-	expr       *cronexpr.Expression
-	stopped    bool
-	taskEvents chan task.Event
+	ctx       context.Context
+	task      *task.Task
+	executeId int64
+	executor  executor.Executor
+	expr      *cronexpr.Expression
+	stopped   bool
+}
+
+type executeEvent struct {
+	task  scheduledTask
+	event executor.Event
 }
 
 type execution struct {
