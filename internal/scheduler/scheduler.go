@@ -10,14 +10,14 @@ import (
 	"github.com/ecodeclub/ecron/internal/executor"
 	"github.com/ecodeclub/ecron/internal/storage"
 	"github.com/ecodeclub/ecron/internal/task"
+	"github.com/ecodeclub/ekit/queue"
 	"github.com/gorhill/cronexpr"
-	"github.com/gotomicro/ekit/queue"
 )
 
-func NewScheduler(s storage.Storager) *Scheduler {
+func NewScheduler(s storage.Storage) *Scheduler {
 	sc := &Scheduler{
 		s:             s,
-		tasks:         make(map[string]scheduledTask),
+		tasks:         make(map[int64]scheduledTask),
 		executors:     make(map[string]executor.Executor),
 		mux:           sync.Mutex{},
 		readyTasks:    queue.NewDelayQueue[execution](10),
@@ -45,21 +45,21 @@ func (sc *Scheduler) Start(ctx context.Context) error {
 			log.Println(e)
 		}
 	}()
-	events, err := sc.s.Events(ctx, sc.taskEvents)
+	events, err := sc.s.Events(sc.taskEvents)
 	if err != nil {
 		return err
 	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case event := <-events:
+			taskCfg := event.Task.Config()
 			switch event.Type {
 			case storage.EventTypePreempted:
-				t := sc.newRunningTask(ctx, event.Task, sc.executors[string(event.Task.Type)])
+				t := sc.newRunningTask(ctx, event.Task, sc.executors[taskCfg.Type])
 				sc.mux.Lock()
-				sc.tasks[t.task.Name] = t
+				sc.tasks[event.Task.ID()] = t
 				sc.mux.Unlock()
 				_ = sc.readyTasks.Enqueue(ctx, execution{
 					scheduledTask: &t,
@@ -69,8 +69,8 @@ func (sc *Scheduler) Start(ctx context.Context) error {
 				log.Println("preempted success, enqueued done")
 			case storage.EventTypeDeleted:
 				sc.mux.Lock()
-				tn, ok := sc.tasks[event.Task.Name]
-				delete(sc.executors, event.Task.Name)
+				tn, ok := sc.tasks[event.Task.ID()]
+				delete(sc.executors, taskCfg.Name)
 				sc.mux.Unlock()
 				if ok {
 					tn.stop()
@@ -102,93 +102,42 @@ func (sc *Scheduler) executeEventLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			log.Println("scheduler 收到ctx cancel信号 退出执行返回事件的监听")
 		case te := <-sc.executeEvents:
-			needEnqueue := false
+			// needEnqueue := false
 			event := task.Event{
-				Task: *te.task.task,
+				Task: te.task.task,
 			}
-			now := time.Now()
-			next := now.Add(time.Second)
-			switch te.event.Type {
-			case executor.ExecuteWaiting:
-				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
-					task.EventTypePreempted, task.EventTypeRunnable); err != nil {
-					log.Println(err)
-				}
-				event.Type = task.EventTypeRunnable
-				if te.event.Delay > time.Second {
-					next = now.Add(te.event.Delay)
-				}
-				log.Println("scheduler 收到task runnable信号")
-			case executor.ExecuteReady:
-				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
-					task.EventTypeRunnable, task.EventTypeInit); err != nil {
-					log.Println(err)
-				}
-				event.Type = task.EventTypeInit
-				if te.event.Delay > time.Second {
-					next = now.Add(te.event.Delay)
-				}
-				log.Println("scheduler 收到task init信号")
-			case executor.ExecuteRunning:
-				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
-					task.EventTypeInit, task.EventTypeRunning); err != nil {
-					log.Println(err)
-				}
-				event.Type = task.EventTypeRunning
-				if te.event.Delay > time.Second {
-					next = now.Add(te.event.Delay)
-				}
-				log.Println("scheduler 收到task running信号")
-			case executor.ExecuteSuccess:
-				//反馈进度至Storage
-				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
-					task.EventTypeRunning, task.EventTypeSuccess); err != nil {
-					log.Println(err)
-				}
-				needEnqueue = true
-				event.Type = task.EventTypeSuccess
-				next = te.task.next()
-				log.Println("scheduler 收到task run success信号")
-			case executor.ExecuteFailed:
-				if err := sc.s.CompareAndUpdateTaskExecutionStatus(ctx, te.task.task.TaskId,
-					task.EventTypeRunning, task.EventTypeFailed); err != nil {
-					log.Println(err)
-				}
-				needEnqueue = true
-				event.Type = task.EventTypeFailed
-				next = te.task.next()
-				log.Println("scheduler 收到task run fail信号")
-			}
-			if needEnqueue {
-				//安排下一次执行
-				_ = sc.readyTasks.Enqueue(ctx, execution{
-					scheduledTask: &te.task,
-					time:          next,
-				})
-			}
+			// TODO 转成 storage 的事件，然后转发过去
+			// if needEnqueue {
+			// 	// 安排下一次执行
+			// 	_ = sc.readyTasks.Enqueue(ctx, execution{
+			// 		scheduledTask: &te.task,
+			// 		time:          next,
+			// 	})
+			// }
 			sc.taskEvents <- event
 		}
 	}
 
 }
 
-func (sc *Scheduler) newRunningTask(ctx context.Context, t *task.Task, exe executor.Executor) scheduledTask {
+func (sc *Scheduler) newRunningTask(ctx context.Context, t task.Task, exe executor.Executor) scheduledTask {
 	var (
 		st    scheduledTask
 		exeId int64
-		err   error
+		// err   error
 	)
 	// 根据任务配置，在db创建一个执行记录
-	if exeId, err = sc.s.AddExecution(ctx, t.TaskId); err != nil {
-		log.Println(err)
-		return st
-	}
+	// if exeId, err = sc.s.AddExecution(ctx, t.TaskId); err != nil {
+	// 	log.Println(err)
+	// 	return st
+	// }
+	taskCfg := t.Config()
 	st = scheduledTask{
 		ctx:       ctx,
 		task:      t,
 		executor:  exe,
 		executeId: exeId,
-		expr:      cronexpr.MustParse(t.Cron),
+		expr:      cronexpr.MustParse(taskCfg.Cron),
 	}
 	return st
 }
@@ -209,14 +158,14 @@ func (r *scheduledTask) run(ec chan<- executeEvent) {
 	// 如果进行后续监控的任务是由专门的goroutine负责
 	// 且此处只是等待executor的返回、没有其他任务，并且是快速调用快速返回
 	// 则应该不需要利用chan通信
-	event := r.executor.Execute(r.ctx, r.task)
-	select {
-	case ec <- executeEvent{
-		task:  *r,
-		event: event,
-	}:
-		log.Printf(`task(%v) 已执行`, r.task.TaskId)
-	case <-r.ctx.Done(): // 利用ctx避免泄露 控制结束
-		log.Printf(`task(%v) 收到ctx结束信号`, r.task.TaskId)
-	}
+	// event := r.executor.Execute(r.ctx, r.task)
+	// select {
+	// case ec <- executeEvent{
+	// 	task:  *r,
+	// 	event: event,
+	// }:
+	// 	log.Printf(`task(%v) 已执行`, r.task.TaskId)
+	// case <-r.ctx.Done(): // 利用ctx避免泄露 控制结束
+	// 	log.Printf(`task(%v) 收到ctx结束信号`, r.task.TaskId)
+	// }
 }

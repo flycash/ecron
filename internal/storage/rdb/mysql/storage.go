@@ -18,8 +18,8 @@ import (
 	"github.com/ecodeclub/ecron/internal/errs"
 	"github.com/ecodeclub/ecron/internal/storage"
 	"github.com/ecodeclub/ecron/internal/storage/rdb"
+	"github.com/ecodeclub/ekit/bean/option"
 	"github.com/ecodeclub/eorm"
-	"github.com/gotomicro/ekit/bean/option"
 )
 
 var _ storage.Storage = &Storage{}

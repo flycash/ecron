@@ -12,33 +12,31 @@ const (
 	// EventTypePreempted 抢占了一个任务
 	EventTypePreempted = "preempted"
 	// EventTypeDeleted 某一个任务被删除了
-	EventTypeDeleted  = "deleted"
-	EventTypeCreated  = "created"
-	EventTypeRunnable = "runnable"
-	EventTypeEnd      = "end"
+	EventTypeDeleted   = "deleted"
+	EventTypeCreated   = "created"
+	EventTypeRunnable  = "runnable"
+	EventTypeEnd       = "end"
+	EventTypeDiscarded = "discarded"
+
+	Stop = "stop"
 )
 
-type Storager interface {
+type Storage interface {
 	// Events
-	// ctx 结束的时候，Storage 也要结束
-	// 实现者需要处理 taskEvents
-	Events(ctx context.Context, taskEvents <-chan task.Event) (<-chan Event, error)
-	TaskDAO
-}
+	// 实现者需要处理 taskEvents，同时需要返回本实现内部发的 Storage 事件
+	// 实现者和调用者都不应该阻塞对方。
+	// 即实现者要保证自己处理 taskEvents 的速率应该大于调用者发送 taskEvents 的速率
+	// 而调用者则应该保证处理返回的事件快于实现者发送事件
+	Events(taskEvents <-chan task.Event) (<-chan Event, error)
+	Close() error
 
-type TaskDAO interface {
-	Get(ctx context.Context, taskId int64) (*task.Task, error)
-	Add(ctx context.Context, t *task.Task) (int64, error)
-	AddExecution(ctx context.Context, taskId int64) (int64, error)
-	Update(ctx context.Context, t *task.Task) error
-	CompareAndUpdateTaskStatus(ctx context.Context, taskId int64, old, new string) error
-	CompareAndUpdateTaskExecutionStatus(ctx context.Context, taskId int64, old, new string) error
-	Delete(ctx context.Context, taskId int64) error
+	Add(ctx context.Context, t task.Task) (int64, error)
+	Update(ctx context.Context, t task.Task) error
 }
 
 type Event struct {
 	Type EventType
-	Task *task.Task
+	Task task.Task
 }
 
 type Status struct {

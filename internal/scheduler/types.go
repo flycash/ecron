@@ -8,13 +8,13 @@ import (
 	"github.com/ecodeclub/ecron/internal/executor"
 	"github.com/ecodeclub/ecron/internal/storage"
 	"github.com/ecodeclub/ecron/internal/task"
+	"github.com/ecodeclub/ekit/queue"
 	"github.com/gorhill/cronexpr"
-	"github.com/gotomicro/ekit/queue"
 )
 
 type Scheduler struct {
-	s             storage.Storager
-	tasks         map[string]scheduledTask
+	s             storage.Storage
+	tasks         map[int64]scheduledTask
 	executors     map[string]executor.Executor
 	mux           sync.Mutex
 	readyTasks    *queue.DelayQueue[execution]
@@ -24,7 +24,7 @@ type Scheduler struct {
 
 type scheduledTask struct {
 	ctx       context.Context
-	task      *task.Task
+	task      task.Task
 	executeId int64
 	executor  executor.Executor
 	expr      *cronexpr.Expression
@@ -42,6 +42,6 @@ type execution struct {
 }
 
 func (e execution) Delay() time.Duration {
-	//return e.time.Sub(time.Now())
+	// return e.time.Sub(time.Now())
 	return time.Until(e.time)
 }

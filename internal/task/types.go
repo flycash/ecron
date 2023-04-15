@@ -21,23 +21,29 @@ const (
 	EventTypeFailed = "failed"
 	// EventTypeSuccess 任务运行成功
 	EventTypeSuccess = "success"
-	// EventTypeInit 任务创建成功
-	EventTypeInit = "init"
+	EventTypeInit    = "init"
 )
 
 type Config struct {
 	Name       string
 	Cron       string
 	Type       Type
-	Parameters string
+	Parameters []byte
 }
 
-// Task 实际上这个表示的是任务的执行信息
-// 通过TaskId关联任务详情ßßß
-type Task struct {
-	Config
-	TaskId int64
-	Epoch  int64
+// 通过TaskId关联任务详情
+// type Task struct {
+//	Parameters
+//	TaskId int64
+//	Epoch  int64
+// }
+
+// Task 任务的抽象接口
+// ID 是全局唯一标识，而 Config 中的 Name 是一种用户友好标识。
+// 那么对于 Name 是否是全局唯一，这里并不做此规定，而是完全取决于具体的实现。
+type Task interface {
+	ID() int64
+	Config() Config
 }
 
 type Event struct {

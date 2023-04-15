@@ -12,7 +12,7 @@ func NewCompareAndUpdateAffectZeroError() error {
 	return fmt.Errorf("ecron: cas 更新状态异常，状态修改受影响行数为0，请确认update条件")
 }
 
-func NewCompareAndUpdateDbError(err error) error {
+func NewCASTaskStatusError(err error) error {
 	return fmt.Errorf("ecron: cas 更新db异常，%w", err)
 }
 
